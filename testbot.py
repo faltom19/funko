@@ -3,6 +3,8 @@ import requests
 from bs4 import BeautifulSoup
 import logging
 import gc  # Garbage collector
+from io import BytesIO
+from PIL import Image
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters
 
@@ -31,7 +33,6 @@ def parse_amazon_product(url: str) -> dict:
     }
 
     try:
-        # Creazione della sessione per ridurre l'uso della memoria
         with requests.Session() as session:
             response = session.get(clean_url, headers=headers, timeout=10)
             response.raise_for_status()
@@ -42,7 +43,6 @@ def parse_amazon_product(url: str) -> dict:
     soup = BeautifulSoup(response.text, "html.parser")
     data = {}
 
-    # Estrazione dei dati da Amazon
     title_tag = soup.find(id="productTitle")
     data["title"] = (
         title_tag.get_text(strip=True) if title_tag else "Titolo non trovato"
@@ -119,21 +119,13 @@ async def handle_message(update: Update, context):
 
             if discount > 0:
                 msg_lines.append(f"🔻 Sconto: {discount}%")
-                msg_lines.append(
-                    f"✂️ <s>{list_price}</s> → <b>{price}</b>\n"
-                )  # Prezzo scontato in grassetto
+                msg_lines.append(f"✂️ <s>{list_price}</s> → <b>{price}</b>\n")
             else:
-                msg_lines.append(
-                    f"💰 <b>{price}</b>\n"
-                )  # Prezzo normale in grassetto senza barrato
+                msg_lines.append(f"💰 <b>{price}</b>\n")
         except ValueError:
-            msg_lines.append(
-                f"💰 <b>{price}</b>\n"
-            )  # Se errore, mostra solo il prezzo normale
+            msg_lines.append(f"💰 <b>{price}</b>\n")
     else:
-        msg_lines.append(
-            f"💰 <b>{price}</b>\n"
-        )  # Prezzo normale in grassetto se non c'è sconto
+        msg_lines.append(f"💰 <b>{price}</b>\n")
 
     msg_lines.append(f'🔗 <a href="{ref_link}">Acquista ora su Amazon</a>')
     msg_lines.append(f"⭐ {reviews}")
@@ -142,8 +134,32 @@ async def handle_message(update: Update, context):
 
     if image_url:
         try:
+            # Apri il template da file sul server
+            with open("template.png", "rb") as f:
+                template_img = Image.open(f).convert("RGB")
+
+            # Scarica l'immagine del prodotto in memoria
+            response = requests.get(image_url, stream=True, timeout=10)
+            response.raise_for_status()
+            product_img = Image.open(BytesIO(response.content)).convert("RGB")
+
+            # Ridimensiona l'immagine del prodotto a 600x600 px
+            product_img = product_img.resize((600, 600), Image.ANTIALIAS)
+
+            # Calcola la posizione centrale per incollare l'immagine del prodotto
+            template_width, template_height = template_img.size
+            pos = ((template_width - 600) // 2, (template_height - 600) // 2)
+
+            # Incolla l'immagine del prodotto sul template
+            template_img.paste(product_img, pos)
+
+            # Salva l'immagine combinata in un buffer in memoria
+            buf = BytesIO()
+            template_img.save(buf, format="PNG")
+            buf.seek(0)
+
             await update.message.reply_photo(
-                photo=image_url, caption=final_message, parse_mode="HTML"
+                photo=buf, caption=final_message, parse_mode="HTML"
             )
         except Exception as e:
             logging.error(f"Errore invio foto: {e}")
@@ -151,7 +167,6 @@ async def handle_message(update: Update, context):
     else:
         await update.message.reply_text(final_message, parse_mode="HTML")
 
-    # Chiamare il garbage collector dopo ogni elaborazione
     gc.collect()
 
 
@@ -167,6 +182,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
     #  source myenv/bin/activate
-    # cd funko/
+    #  cd funko/
     #  nohup python testbot.py &
