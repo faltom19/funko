@@ -6,7 +6,7 @@ import gc  # Garbage collector
 from io import BytesIO
 from PIL import Image
 from telegram import Update
-from telegram.ext import Application, MessageHandler, CommandHandler, filters
+from telegram.ext import Application, MessageHandler, filters
 
 # ==============================
 # CONFIGURAZIONE
@@ -108,8 +108,7 @@ async def handle_message(update: Update, context):
     ref_link = product_data["ref_link"]
     image_url = product_data["image_url"]
 
-    msg_lines = []
-    msg_lines.append(f"📍 <b>{title}</b>\n")  # Spazio dopo il titolo
+    msg_lines = [f"📍 <b>{title}</b>\n"]
 
     if list_price and "non disponibile" not in price.lower():
         try:
@@ -134,7 +133,7 @@ async def handle_message(update: Update, context):
 
     if image_url:
         try:
-            # Apri il template da file sul server
+            # Apri il template dal file sul server
             with open("template.png", "rb") as f:
                 template_img = Image.open(f).convert("RGB")
 
@@ -143,15 +142,25 @@ async def handle_message(update: Update, context):
             response.raise_for_status()
             product_img = Image.open(BytesIO(response.content)).convert("RGB")
 
-            # Ridimensiona l'immagine del prodotto a 600x600 px
-            product_img = product_img.resize((600, 600), Image.ANTIALIAS)
+            # Ottieni le dimensioni originali dell'immagine del prodotto
+            orig_width, orig_height = product_img.size
 
-            # Calcola la posizione centrale per incollare l'immagine del prodotto
-            template_width, template_height = template_img.size
-            pos = ((template_width - 600) // 2, (template_height - 600) // 2)
+            # Fattore di scala (x3)
+            scale_factor = 3
+
+            # Calcola la nuova dimensione scalata mantenendo le proporzioni
+            new_width = min(template_img.width, orig_width * scale_factor)
+            new_height = min(template_img.height, orig_height * scale_factor)
+
+            # Ridimensiona l'immagine del prodotto mantenendo le proporzioni
+            product_img = product_img.resize((new_width, new_height), Image.LANCZOS)
+
+            # Calcola la posizione per centrare l'immagine nel template
+            pos_x = (template_img.width - new_width) // 2
+            pos_y = (template_img.height - new_height) // 2
 
             # Incolla l'immagine del prodotto sul template
-            template_img.paste(product_img, pos)
+            template_img.paste(product_img, (pos_x, pos_y))
 
             # Salva l'immagine combinata in un buffer in memoria
             buf = BytesIO()
@@ -186,3 +195,7 @@ if __name__ == "__main__":
     #  source myenv/bin/activate
     #  cd funko/
     #  nohup python testbot.py &
+
+# pip install requests beautifulsoup4 pillow python-telegram-bot
+
+# pip3 install requests beautifulsoup4 pillow python-telegram-bot
