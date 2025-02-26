@@ -2,11 +2,11 @@ import re
 import requests
 from bs4 import BeautifulSoup
 import logging
-import gc
+import gc  # Garbage collector
 from io import BytesIO
 from PIL import Image
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, CallbackContext
+from telegram.ext import Application, MessageHandler, filters
 
 # ==============================
 # CONFIGURAZIONE
@@ -15,36 +15,16 @@ TELEGRAM_BOT_TOKEN = "7861319577:AAEd-RY5TcD7_GlN5EKzErRTTrYvHeQ73-k"
 CHANNEL_ID = "@fpitcanale"  # ID del canale dove pubblicare il post
 REF_TAG = "funkoitalia0c-21"
 
-# Memorizza l'ultimo messaggio generato per ogni utente
-pending_messages = {}
-
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
 
 # ==============================
-# FUNZIONE PER RISOLVERE LINK ABBREVIATI
-# ==============================
-def resolve_short_url(short_url: str) -> str:
-    """Segue il link accorciato e restituisce l'URL completo."""
-    try:
-        response = requests.head(short_url, allow_redirects=True, timeout=10)
-        return response.url
-    except requests.RequestException as e:
-        logging.error(f"Errore nel risolvere il link abbreviato: {e}")
-        return short_url
-
-
-# ==============================
 # FUNZIONE DI SCRAPING
 # ==============================
 def parse_amazon_product(url: str) -> dict:
-    """Esegue il web scraping dei dettagli di un prodotto Amazon."""
-
-    url = resolve_short_url(url)  # Risolve link abbreviati
     clean_url = url.split("?")[0]
-
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -99,12 +79,10 @@ def parse_amazon_product(url: str) -> dict:
 # ==============================
 # GESTORE DEI MESSAGGI
 # ==============================
-async def handle_message(update: Update, context: CallbackContext):
-    """Gestisce i messaggi ricevuti dal bot."""
-
+async def handle_message(update: Update, context):
     text = update.message.text.strip()
 
-    if not any(domain in text for domain in ["amazon.", "amzn.to", "amzn.eu"]):
+    if "amazon." not in text:
         await update.message.reply_text("Per favore, inviami un link di Amazon valido.")
         return
 
@@ -146,9 +124,7 @@ async def handle_message(update: Update, context: CallbackContext):
 
     final_message = "\n".join(msg_lines)
 
-    # Salva il messaggio in memoria per futura conferma
-    pending_messages[update.message.chat_id] = final_message
-
+    # Invio messaggio nel canale
     if image_url:
         try:
             response = requests.get(image_url, stream=True, timeout=10)
@@ -159,34 +135,20 @@ async def handle_message(update: Update, context: CallbackContext):
             product_img.save(buf, format="PNG")
             buf.seek(0)
 
-            await update.message.reply_photo(
-                photo=buf, caption=final_message, parse_mode="HTML"
+            await context.bot.send_photo(
+                chat_id=CHANNEL_ID, photo=buf, caption=final_message, parse_mode="HTML"
             )
         except Exception as e:
             logging.error(f"Errore invio foto: {e}")
-            await update.message.reply_text(final_message, parse_mode="HTML")
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID, text=final_message, parse_mode="HTML"
+            )
     else:
-        await update.message.reply_text(final_message, parse_mode="HTML")
+        await context.bot.send_message(
+            chat_id=CHANNEL_ID, text=final_message, parse_mode="HTML"
+        )
 
     gc.collect()
-
-
-# ==============================
-# GESTORE DELLA RISPOSTA "OK"
-# ==============================
-async def handle_ok_response(update: Update, context: CallbackContext):
-    """Se l'utente risponde con 'ok', il post viene pubblicato nel canale."""
-
-    chat_id = update.message.chat_id
-    reply_to = update.message.reply_to_message
-
-    if reply_to and chat_id in pending_messages:
-        message = pending_messages[chat_id]
-        await context.bot.send_message(
-            chat_id=CHANNEL_ID, text=message, parse_mode="HTML"
-        )
-        await update.message.reply_text("✅ Post pubblicato nel canale!")
-        del pending_messages[chat_id]  # Rimuove il messaggio dalla memoria
 
 
 # ==============================
@@ -194,14 +156,7 @@ async def handle_ok_response(update: Update, context: CallbackContext):
 # ==============================
 def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & filters.Regex(re.compile(r"^ok$", re.IGNORECASE)),
-            handle_ok_response,
-        )
-    )
-
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Bot in esecuzione...")
     app.run_polling(poll_interval=3, timeout=10, drop_pending_updates=True)
 
@@ -209,9 +164,9 @@ def main():
 if __name__ == "__main__":
     main()
 
-#  source myenv/bin/activate
-#  cd funko/
-#  nohup python testbot.py &
+    #  source myenv/bin/activate
+    #  cd funko/
+    #  nohup python testbot.py &
 
 # pip install requests beautifulsoup4 pillow python-telegram-bot
 # pip3 install requests beautifulsoup4 pillow python-telegram-bot
