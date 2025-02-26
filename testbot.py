@@ -52,24 +52,32 @@ def parse_amazon_product(url: str) -> dict:
     price_tag = soup.select_one(
         "#priceblock_ourprice, #priceblock_dealprice, #priceblock_saleprice, span.a-price span.a-offscreen"
     )
-    data["price"] = (
-        price_tag.get_text(strip=True) if price_tag else "Prezzo non disponibile"
-    )
+    if price_tag:
+        data["price"] = price_tag.get_text(strip=True)
+    else:
+        data["price"] = "Prezzo non disponibile"
 
     list_price_tag = soup.select_one(
         "span.priceBlockStrikePriceString, span.a-price.a-text-price span.a-offscreen"
     )
-    data["list_price"] = list_price_tag.get_text(strip=True) if list_price_tag else None
+    if list_price_tag:
+        data["list_price"] = list_price_tag.get_text(strip=True)
+    else:
+        data["list_price"] = None
 
     review_tag = soup.select_one("#acrCustomerReviewText")
     data["reviews"] = review_tag.get_text(strip=True) if review_tag else "0 recensioni"
 
     meta_image_tag = soup.find("meta", property="og:image")
-    data["image_url"] = (
-        meta_image_tag["content"]
-        if meta_image_tag and "content" in meta_image_tag.attrs
-        else None
-    )
+    if meta_image_tag and "content" in meta_image_tag.attrs:
+        data["image_url"] = meta_image_tag["content"]
+    else:
+        landing_image = soup.select_one("#imgTagWrapperId img, #landingImage")
+        data["image_url"] = (
+            landing_image["src"]
+            if landing_image and "src" in landing_image.attrs
+            else None
+        )
 
     data["ref_link"] = f"{clean_url}?tag={REF_TAG}"
 
@@ -124,15 +132,40 @@ async def handle_message(update: Update, context):
 
     final_message = "\n".join(msg_lines)
 
-    # Invio messaggio nel canale
     if image_url:
         try:
+            # Apri il template dal file sul server
+            with open("template.png", "rb") as f:
+                template_img = Image.open(f).convert("RGB")
+
+            # Scarica l'immagine del prodotto in memoria
             response = requests.get(image_url, stream=True, timeout=10)
             response.raise_for_status()
             product_img = Image.open(BytesIO(response.content)).convert("RGB")
 
+            # Ottieni le dimensioni originali dell'immagine del prodotto
+            orig_width, orig_height = product_img.size
+
+            # Fattore di scala (x2)
+            scale_factor = 2
+
+            # Calcola la nuova dimensione scalata mantenendo le proporzioni
+            new_width = min(template_img.width, orig_width * scale_factor)
+            new_height = min(template_img.height, orig_height * scale_factor)
+
+            # Ridimensiona l'immagine del prodotto mantenendo le proporzioni
+            product_img = product_img.resize((new_width, new_height), Image.LANCZOS)
+
+            # Calcola la posizione per centrare l'immagine nel template
+            pos_x = (template_img.width - new_width) // 2
+            pos_y = (template_img.height - new_height) // 2
+
+            # Incolla l'immagine del prodotto sul template
+            template_img.paste(product_img, (pos_x, pos_y))
+
+            # Salva l'immagine combinata in un buffer in memoria
             buf = BytesIO()
-            product_img.save(buf, format="PNG")
+            template_img.save(buf, format="PNG")
             buf.seek(0)
 
             await context.bot.send_photo(
@@ -169,4 +202,5 @@ if __name__ == "__main__":
     #  nohup python testbot.py &
 
 # pip install requests beautifulsoup4 pillow python-telegram-bot
+
 # pip3 install requests beautifulsoup4 pillow python-telegram-bot
