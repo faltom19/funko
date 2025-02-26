@@ -195,10 +195,10 @@ async def handle_ok_response(update: Update, context: CallbackContext):
 def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(
         MessageHandler(
-            filters.TEXT & filters.Regex(r"^ok$", re.IGNORECASE), handle_ok_response
+            filters.TEXT & filters.Regex(re.compile(r"^ok$", re.IGNORECASE)),
+            handle_ok_response,
         )
     )
 
@@ -209,10 +209,9 @@ def main():
 if __name__ == "__main__":
     main()
 
-    #  source myenv/bin/activate
-    #  cd funko/
-    #  nohup python testbot.py &
+#  source myenv/bin/activate
+#  cd funko/
+#  nohup python testbot.py &
 
 # pip install requests beautifulsoup4 pillow python-telegram-bot
-
 # pip3 install requests beautifulsoup4 pillow python-telegram-bot
