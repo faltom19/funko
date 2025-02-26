@@ -2,43 +2,49 @@ import re
 import requests
 from bs4 import BeautifulSoup
 import logging
-import gc  # Garbage collector
+import gc
 from io import BytesIO
 from PIL import Image
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, MessageHandler, filters, CallbackContext
 
 # ==============================
 # CONFIGURAZIONE
 # ==============================
 TELEGRAM_BOT_TOKEN = "7861319577:AAEd-RY5TcD7_GlN5EKzErRTTrYvHeQ73-k"
+CHANNEL_ID = "@fpitcanale"  # ID del canale dove pubblicare il post
 REF_TAG = "funkoitalia0c-21"
-CHANNEL_ID = "@fpitcanale"  # ID o username del gruppo/canale
+
+# Memorizza l'ultimo messaggio generato per ogni utente
+pending_messages = {}
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
-# Memoria temporanea per salvare i messaggi in attesa di conferma
-pending_posts = {}
-
 
 # ==============================
-# FUNZIONE PER ESPANDERE LINK BREVI AMAZON
+# FUNZIONE PER RISOLVERE LINK ABBREVIATI
 # ==============================
-def expand_amazon_link(short_url: str) -> str:
+def resolve_short_url(short_url: str) -> str:
+    """Segue il link accorciato e restituisce l'URL completo."""
     try:
         response = requests.head(short_url, allow_redirects=True, timeout=10)
-        return response.url.split("?")[0]  # Rimuove eventuali parametri extra
+        return response.url
     except requests.RequestException as e:
-        logging.error(f"Errore nell'espansione del link Amazon: {e}")
-        return None
+        logging.error(f"Errore nel risolvere il link abbreviato: {e}")
+        return short_url
 
 
 # ==============================
 # FUNZIONE DI SCRAPING
 # ==============================
 def parse_amazon_product(url: str) -> dict:
+    """Esegue il web scraping dei dettagli di un prodotto Amazon."""
+
+    url = resolve_short_url(url)  # Risolve link abbreviati
+    clean_url = url.split("?")[0]
+
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -49,7 +55,7 @@ def parse_amazon_product(url: str) -> dict:
 
     try:
         with requests.Session() as session:
-            response = session.get(url, headers=headers, timeout=10)
+            response = session.get(clean_url, headers=headers, timeout=10)
             response.raise_for_status()
     except requests.RequestException as e:
         logging.error(f"Errore richiesta Amazon: {e}")
@@ -79,9 +85,13 @@ def parse_amazon_product(url: str) -> dict:
     data["reviews"] = review_tag.get_text(strip=True) if review_tag else "0 recensioni"
 
     meta_image_tag = soup.find("meta", property="og:image")
-    data["image_url"] = meta_image_tag["content"] if meta_image_tag else None
+    data["image_url"] = (
+        meta_image_tag["content"]
+        if meta_image_tag and "content" in meta_image_tag.attrs
+        else None
+    )
 
-    data["ref_link"] = f"{url}?tag={REF_TAG}"
+    data["ref_link"] = f"{clean_url}?tag={REF_TAG}"
 
     return data
 
@@ -89,18 +99,12 @@ def parse_amazon_product(url: str) -> dict:
 # ==============================
 # GESTORE DEI MESSAGGI
 # ==============================
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context: CallbackContext):
+    """Gestisce i messaggi ricevuti dal bot."""
+
     text = update.message.text.strip()
 
-    # Controlla se il link è abbreviato e lo espande
-    if text.startswith("https://amzn.to/") or text.startswith("https://amzn.eu/"):
-        expanded_url = expand_amazon_link(text)
-        if not expanded_url:
-            await update.message.reply_text("Errore nell'espansione del link. Riprova.")
-            return
-        text = expanded_url
-
-    if "amazon." not in text:
+    if not any(domain in text for domain in ["amazon.", "amzn.to", "amzn.eu"]):
         await update.message.reply_text("Per favore, inviami un link di Amazon valido.")
         return
 
@@ -142,35 +146,47 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     final_message = "\n".join(msg_lines)
 
-    # Salva il messaggio in attesa di conferma
-    pending_posts[update.message.chat_id] = final_message
+    # Salva il messaggio in memoria per futura conferma
+    pending_messages[update.message.chat_id] = final_message
 
-    await update.message.reply_text(final_message, parse_mode="HTML")
-    await update.message.reply_text("Rispondi con 'ok' per pubblicarlo nel canale.")
+    if image_url:
+        try:
+            response = requests.get(image_url, stream=True, timeout=10)
+            response.raise_for_status()
+            product_img = Image.open(BytesIO(response.content)).convert("RGB")
+
+            buf = BytesIO()
+            product_img.save(buf, format="PNG")
+            buf.seek(0)
+
+            await update.message.reply_photo(
+                photo=buf, caption=final_message, parse_mode="HTML"
+            )
+        except Exception as e:
+            logging.error(f"Errore invio foto: {e}")
+            await update.message.reply_text(final_message, parse_mode="HTML")
+    else:
+        await update.message.reply_text(final_message, parse_mode="HTML")
 
     gc.collect()
 
 
 # ==============================
-# GESTORE DELLE RISPOSTE DI CONFERMA
+# GESTORE DELLA RISPOSTA "OK"
 # ==============================
-async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_ok_response(update: Update, context: CallbackContext):
+    """Se l'utente risponde con 'ok', il post viene pubblicato nel canale."""
+
     chat_id = update.message.chat_id
-    text = update.message.text.strip().lower()
+    reply_to = update.message.reply_to_message
 
-    if text == "ok" and chat_id in pending_posts:
-        post_message = pending_posts.pop(chat_id)
-
-        try:
-            await context.bot.send_message(
-                chat_id=CHANNEL_ID, text=post_message, parse_mode="HTML"
-            )
-            await update.message.reply_text("✅ Post pubblicato nel canale!")
-        except Exception as e:
-            logging.error(f"Errore nella pubblicazione: {e}")
-            await update.message.reply_text("❌ Errore nella pubblicazione del post.")
-    else:
-        await update.message.reply_text("Comando non riconosciuto.")
+    if reply_to and chat_id in pending_messages:
+        message = pending_messages[chat_id]
+        await context.bot.send_message(
+            chat_id=CHANNEL_ID, text=message, parse_mode="HTML"
+        )
+        await update.message.reply_text("✅ Post pubblicato nel canale!")
+        del pending_messages[chat_id]  # Rimuove il messaggio dalla memoria
 
 
 # ==============================
@@ -179,12 +195,11 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
 def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Gestisce i link Amazon
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # Gestisce la conferma "ok"
     app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confirmation)
+        MessageHandler(
+            filters.TEXT & filters.Regex(r"^ok$", re.IGNORECASE), handle_ok_response
+        )
     )
 
     print("Bot in esecuzione...")
