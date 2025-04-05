@@ -102,7 +102,13 @@ async def handle_message(update: Update, context):
         )
         return
 
+    # Pulizia del titolo
     title = product_data["title"]
+    title = title.replace("Animation: ", "").strip()
+
+    # Rimuove tutto ciò che viene dopo (e incluso) "- Figura in Vinile"
+    title = re.sub(r"- Figura in Vinile.*", "", title).strip()
+
     price = product_data["price"]
     list_price = product_data["list_price"]
     reviews = product_data["reviews"]
