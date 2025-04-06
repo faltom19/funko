@@ -10,6 +10,18 @@ from urllib.parse import urlparse, parse_qs, unquote
 import gc
 import logging
 
+# Configurazione logging: output sia su file che su console
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("monitor_bot_debug.log"),
+        logging.StreamHandler()
+    ]
+)
+
+logging.debug("Avvio dello script monitor_bot")
+
 # ==============================
 # CONFIGURAZIONE
 # ==============================
@@ -29,8 +41,11 @@ def estrai_float(valore):
     try:
         valore = valore.replace("€", "").strip()
         valore = valore.replace(".", "").replace(",", ".")
-        return float(valore)
-    except Exception:
+        result = float(valore)
+        logging.debug(f"estrai_float: convertito '{valore}' in {result}")
+        return result
+    except Exception as e:
+        logging.error(f"estrai_float: errore con valore '{valore}': {e}")
         return None
 
 def estrai_prezzo(parte_intera_tag, parte_decimale_tag):
@@ -39,12 +54,15 @@ def estrai_prezzo(parte_intera_tag, parte_decimale_tag):
     if intero and intero[-1] in [".", ","]:
         intero = intero[:-1]
     prezzo_testo = intero + "," + fraz
-    return estrai_float(prezzo_testo)
+    result = estrai_float(prezzo_testo)
+    logging.debug(f"estrai_prezzo: '{prezzo_testo}' convertito in {result}")
+    return result
 
 # ==============================
 # GESTIONE FILE DI LOG
 # ==============================
 def carica_prodotti_salvati():
+    logging.debug("Caricamento prodotti salvati")
     prodotti = {}
     ora_attuale = datetime.datetime.now()
     if os.path.exists(FILE_PATH):
@@ -63,17 +81,24 @@ def carica_prodotti_salvati():
                 if delta < 72 * 3600:
                     prodotti[link] = timestamp
                     nuovi_lines.append(line + "\n")
-            except Exception:
+            except Exception as e:
+                logging.error(f"Errore nel parsing della linea '{line}': {e}")
                 continue
 
         with open(FILE_PATH, "w") as f:
             f.writelines(nuovi_lines)
-
+        logging.debug(f"Prodotti salvati caricati: {len(prodotti)}")
+    else:
+        logging.debug("File dei prodotti non esiste, verrà creato.")
     return prodotti
 
 def salva_prodotto(link, timestamp):
-    with open(FILE_PATH, "a") as f:
-        f.write(f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')}{DELIMITER}{link}\n")
+    try:
+        with open(FILE_PATH, "a") as f:
+            f.write(f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')}{DELIMITER}{link}\n")
+        logging.debug(f"Salvato prodotto: {link} a {timestamp}")
+    except Exception as e:
+        logging.error(f"Errore nel salvataggio del prodotto {link}: {e}")
 
 # ==============================
 # PULIZIA DELL'URL AMAZON
@@ -85,13 +110,18 @@ def clean_amazon_url(url: str) -> str:
         if "url" in qs:
             product_path = qs["url"][0]
             product_path = unquote(product_path)
-            return "https://www.amazon.it" + product_path
-    return url.split("?")[0]
+            clean_url = "https://www.amazon.it" + product_path
+            logging.debug(f"Pulizia URL: {url} -> {clean_url}")
+            return clean_url
+    result = url.split("?")[0]
+    logging.debug(f"Pulizia URL (senza sspa/click): {url} -> {result}")
+    return result
 
 # ==============================
 # FUNZIONE DI SCRAPING DEL PRODOTTO (OTTIMIZZATA)
 # ==============================
 def parse_amazon_product(url: str) -> dict:
+    logging.debug(f"Inizio parsing prodotto: {url}")
     clean_url = url.split("?")[0]
     headers = {
         "User-Agent": (
@@ -105,6 +135,7 @@ def parse_amazon_product(url: str) -> dict:
         with requests.Session() as session:
             response = session.get(clean_url, headers=headers, timeout=10)
             response.raise_for_status()
+            logging.debug("Richiesta ad Amazon completata con successo")
     except requests.RequestException as e:
         logging.error(f"Errore richiesta Amazon: {e}")
         return None
@@ -114,15 +145,19 @@ def parse_amazon_product(url: str) -> dict:
 
     title_tag = soup.find(id="productTitle")
     data["title"] = title_tag.get_text(strip=True) if title_tag else "Titolo non trovato"
+    logging.debug(f"Titolo prodotto: {data['title']}")
 
     price_tag = soup.select_one("#priceblock_ourprice, #priceblock_dealprice, #priceblock_saleprice, span.a-price span.a-offscreen")
     data["price"] = price_tag.get_text(strip=True) if price_tag else "Prezzo non disponibile"
+    logging.debug(f"Prezzo prodotto: {data['price']}")
 
     list_price_tag = soup.select_one("span.priceBlockStrikePriceString, span.a-price.a-text-price span.a-offscreen")
     data["list_price"] = list_price_tag.get_text(strip=True) if list_price_tag else None
+    logging.debug(f"List price: {data['list_price']}")
 
     review_tag = soup.select_one("#acrCustomerReviewText")
     data["reviews"] = review_tag.get_text(strip=True) if review_tag else "0 recensioni"
+    logging.debug(f"Reviews: {data['reviews']}")
 
     meta_image_tag = soup.find("meta", property="og:image")
     if meta_image_tag and "content" in meta_image_tag.attrs:
@@ -130,8 +165,10 @@ def parse_amazon_product(url: str) -> dict:
     else:
         landing_image = soup.select_one("#imgTagWrapperId img, #landingImage")
         data["image_url"] = landing_image["src"] if landing_image and "src" in landing_image.attrs else None
+    logging.debug(f"Image URL: {data['image_url']}")
 
     data["ref_link"] = f"{clean_url}?tag={REF_TAG}"
+    logging.debug(f"Ref link: {data['ref_link']}")
 
     return data
 
@@ -139,6 +176,7 @@ def parse_amazon_product(url: str) -> dict:
 # COSTRUZIONE DEL MESSAGGIO E COMPOSIZIONE DELL'IMMAGINE
 # ==============================
 def build_telegram_message(product_data: dict) -> str:
+    logging.debug("Costruzione messaggio Telegram")
     title = product_data.get("title", "Titolo non trovato")
     title = title.replace("Animation: ", "").strip()
     title = re.sub(r"- Figura in Vinile.*", "", title).strip()
@@ -156,18 +194,23 @@ def build_telegram_message(product_data: dict) -> str:
                 msg_lines.append(f"✂️ <s>{list_price}</s> → <b>{price}</b>\n")
             else:
                 msg_lines.append(f"💰 <b>{price}</b>\n")
-        except ValueError:
+        except ValueError as e:
+            logging.error(f"Errore nel calcolo del discount: {e}")
             msg_lines.append(f"💰 <b>{price}</b>\n")
     else:
         msg_lines.append(f"💰 <b>{price}</b>\n")
     ref_link = product_data.get("ref_link", "")
     msg_lines.append(f'🔗 <a href="{ref_link}">Acquista ora su Amazon</a>')
     msg_lines.append(f"⭐ {reviews}")
-    return "\n".join(msg_lines)
+    message = "\n".join(msg_lines)
+    logging.debug(f"Messaggio Telegram costruito: {message}")
+    return message
 
 def compose_image(product_data: dict) -> bytes:
+    logging.debug("Composizione immagine prodotto")
     image_url = product_data.get("image_url")
     if not image_url:
+        logging.debug("Nessun URL immagine trovato")
         return None
     try:
         template_img = Image.open(TEMPLATE_IMAGE_PATH).convert("RGB")
@@ -185,14 +228,17 @@ def compose_image(product_data: dict) -> bytes:
         buf = BytesIO()
         template_img.save(buf, format="PNG")
         buf.seek(0)
+        logging.debug("Immagine composta correttamente")
         return buf.read()
-    except Exception:
+    except Exception as e:
+        logging.error(f"Errore nella composizione dell'immagine: {e}")
         return None
 
 # ==============================
 # INVIO SU TELEGRAM
 # ==============================
 def send_to_telegram(message, photo_bytes=None):
+    logging.debug("Invio messaggio a Telegram")
     if photo_bytes:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         data = {"chat_id": CHANNEL_ID, "caption": message, "parse_mode": "HTML"}
@@ -200,41 +246,51 @@ def send_to_telegram(message, photo_bytes=None):
         try:
             response = requests.post(url, data=data, files=files)
             response.raise_for_status()
-        except requests.RequestException:
-            pass
+            logging.debug("Messaggio con foto inviato a Telegram")
+        except requests.RequestException as e:
+            logging.error(f"Errore nell'invio della foto a Telegram: {e}")
     else:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": CHANNEL_ID, "text": message, "parse_mode": "HTML"}
         try:
             response = requests.post(url, data=data)
             response.raise_for_status()
-        except requests.RequestException:
-            pass
+            logging.debug("Messaggio di testo inviato a Telegram")
+        except requests.RequestException as e:
+            logging.error(f"Errore nell'invio del messaggio a Telegram: {e}")
 
 def post_product(product_link: str):
+    logging.debug(f"Post prodotto: {product_link}")
     product_data = parse_amazon_product(product_link)
     if not product_data:
+        logging.error("Dati prodotto non trovati, interrompo post_product")
         return
     message = build_telegram_message(product_data)
     photo_bytes = compose_image(product_data)
     send_to_telegram(message, photo_bytes)
     gc.collect()
+    logging.debug("post_product completato")
 
 # ==============================
 # MONITORAGGIO DEI PRODOTTI
 # ==============================
 def controlla_prodotti():
+    logging.debug("Controllo prodotti in corso")
     ora_corrente = datetime.datetime.now()
     if ora_corrente.hour < 8 or ora_corrente.hour >= 22:
+        logging.debug("Fuori orario, uscita da controlla_prodotti")
         return
     try:
         risposta = requests.get(AMAZON_SEARCH_URL)
         risposta.raise_for_status()
-    except Exception:
+        logging.debug("Richiesta Amazon search completata")
+    except Exception as e:
+        logging.error(f"Errore durante la richiesta di ricerca su Amazon: {e}")
         return
     soup = BeautifulSoup(risposta.text, "html.parser")
     prodotti = soup.find_all("div", {"data-asin": True})
     if not prodotti:
+        logging.debug("Nessun prodotto trovato nella ricerca")
         return
 
     prodotti_salvati = carica_prodotti_salvati()
@@ -279,6 +335,7 @@ def controlla_prodotti():
 # FUNZIONE PRINCIPALE
 # ==============================
 def main():
+    logging.debug("Entrata nella funzione main")
     while True:
         ora_corrente = datetime.datetime.now()
         if 8 <= ora_corrente.hour < 22:
@@ -286,11 +343,8 @@ def main():
         ora_successiva = (ora_corrente.replace(minute=0, second=0, microsecond=0) +
                           datetime.timedelta(hours=1))
         tempo_attesa = (ora_successiva - datetime.datetime.now()).total_seconds()
+        logging.debug(f"Sleep per {tempo_attesa} secondi")
         time.sleep(tempo_attesa)
 
 if __name__ == "__main__":
     main()
-
-    #  source myenv/bin/activate
-    #  cd funko/
-    #  nohup python monitor_bot.py &
