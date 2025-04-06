@@ -290,3 +290,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    #  source myenv/bin/activate
+    #  cd funko/
+    #  nohup python monitor_bot.py &
