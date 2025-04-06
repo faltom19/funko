@@ -9,6 +9,7 @@ from PIL import Image
 from urllib.parse import urlparse, parse_qs, unquote
 import gc
 import logging
+import random
 
 # Configurazione logging: output sia su file che su console
 logging.basicConfig(
@@ -33,6 +34,28 @@ REF_TAG = "funkoitalia0c-21"
 AMAZON_SEARCH_URL = "https://www.amazon.it/s?k=funko+pop"
 TIME_INTERVAL = 3600
 TEMPLATE_IMAGE_PATH = "template.png"
+
+# ==============================
+# LISTA DI USER-AGENT RANDOM
+# ==============================
+USER_AGENTS = [  # ✨ MODIFICATO ✨
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:98.0) Gecko/20100101 Firefox/98.0",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:93.0) Gecko/20100101 Firefox/93.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Safari/605.1.15",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 15_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.2 Mobile/15E148 Safari/604.1",
+]
+
+def get_random_headers():  # ✨ MODIFICATO ✨
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7"
+    }
+
+def random_delay():  # ✨ MODIFICATO ✨
+    delay = random.uniform(2, 5)
+    logging.debug(f"🕒 Ritardo random di {delay:.2f} secondi")
+    time.sleep(delay)
 
 # ==============================
 # FUNZIONI UTILI PER IL PREZZO
@@ -123,13 +146,8 @@ def clean_amazon_url(url: str) -> str:
 def parse_amazon_product(url: str) -> dict:
     logging.debug(f"Inizio parsing prodotto: {url}")
     clean_url = url.split("?")[0]
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/98.0.4758.102 Safari/537.36"
-        )
-    }
+    headers = get_random_headers()  # ✨ MODIFICATO ✨
+    random_delay()  # ✨ MODIFICATO ✨
 
     try:
         with requests.Session() as session:
@@ -283,7 +301,9 @@ def controlla_prodotti():
         logging.debug("Fuori orario, uscita da controlla_prodotti")
         return
     try:
-        risposta = requests.get(AMAZON_SEARCH_URL)
+        headers = get_random_headers()  # ✨ MODIFICATO ✨
+        random_delay()  # ✨ MODIFICATO ✨
+        risposta = requests.get(AMAZON_SEARCH_URL, headers=headers, timeout=10)  # ✨ MODIFICATO ✨
         risposta.raise_for_status()
         print("✅ Pagina Amazon caricata con successo.")
         logging.debug("Richiesta Amazon search completata")
