@@ -275,21 +275,28 @@ def post_product(product_link: str):
 # MONITORAGGIO DEI PRODOTTI
 # ==============================
 def controlla_prodotti():
+    print("🟡 Avvio controllo prodotti...")
     logging.debug("Controllo prodotti in corso")
     ora_corrente = datetime.datetime.now()
     if ora_corrente.hour < 8 or ora_corrente.hour >= 22:
+        print("🔕 Fuori orario (8-22), nessun controllo effettuato.")
         logging.debug("Fuori orario, uscita da controlla_prodotti")
         return
     try:
         risposta = requests.get(AMAZON_SEARCH_URL)
         risposta.raise_for_status()
+        print("✅ Pagina Amazon caricata con successo.")
         logging.debug("Richiesta Amazon search completata")
     except Exception as e:
+        print(f"❌ Errore nel caricamento della pagina Amazon: {e}")
         logging.error(f"Errore durante la richiesta di ricerca su Amazon: {e}")
         return
+
     soup = BeautifulSoup(risposta.text, "html.parser")
     prodotti = soup.find_all("div", {"data-asin": True})
+    print(f"📦 Trovati {len(prodotti)} prodotti nella pagina.")
     if not prodotti:
+        print("⚠️ Nessun prodotto trovato nella ricerca.")
         logging.debug("Nessun prodotto trovato nella ricerca")
         return
 
@@ -318,6 +325,8 @@ def controlla_prodotti():
         if sconto < 15:
             continue
 
+        print(f"💥 Prodotto con sconto > 15% trovato: {prezzo_corrente}€ vs {prezzo_originale}€ ({round(sconto)}%)")
+
         link_tag = prodotto.find("a", class_="a-link-normal")
         if link_tag and link_tag.get("href"):
             raw_link = "https://www.amazon.it" + link_tag.get("href")
@@ -326,23 +335,27 @@ def controlla_prodotti():
                 saved_time = prodotti_salvati[clean_link]
                 delta = (ora_corrente - saved_time).total_seconds()
                 if delta < 72 * 3600:
+                    print("⏩ Prodotto già pubblicato di recente, salto.")
                     continue
+            print(f"📨 Invio prodotto: {clean_link}")
             salva_prodotto(clean_link, ora_corrente)
             post_product(clean_link)
             break
+    print("✅ Controllo prodotti completato.\n")
 
-# ==============================
-# FUNZIONE PRINCIPALE
-# ==============================
 def main():
+    print("🚀 Avvio del monitor Amazon Funko")
     logging.debug("Entrata nella funzione main")
     while True:
         ora_corrente = datetime.datetime.now()
         if 8 <= ora_corrente.hour < 22:
             controlla_prodotti()
+        else:
+            print("🕒 Orario fuori fascia (monitoraggio attivo 8-22)")
         ora_successiva = (ora_corrente.replace(minute=0, second=0, microsecond=0) +
                           datetime.timedelta(hours=1))
         tempo_attesa = (ora_successiva - datetime.datetime.now()).total_seconds()
+        print(f"⏳ Aspetto fino alle {ora_successiva.strftime('%H:%M')}")
         logging.debug(f"Sleep per {tempo_attesa} secondi")
         time.sleep(tempo_attesa)
 
