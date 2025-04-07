@@ -10,6 +10,8 @@ from urllib.parse import urlparse, parse_qs, unquote
 import gc
 import logging
 import random
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Configurazione logging: output sia su file che su console
 logging.basicConfig(
@@ -38,7 +40,7 @@ TEMPLATE_IMAGE_PATH = "template.png"
 # ==============================
 # LISTA DI USER-AGENT RANDOM
 # ==============================
-USER_AGENTS = [  # ✨ MODIFICATO ✨
+USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:98.0) Gecko/20100101 Firefox/98.0",
     "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:93.0) Gecko/20100101 Firefox/93.0",
@@ -46,13 +48,13 @@ USER_AGENTS = [  # ✨ MODIFICATO ✨
     "Mozilla/5.0 (iPhone; CPU iPhone OS 15_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.2 Mobile/15E148 Safari/604.1",
 ]
 
-def get_random_headers():  # ✨ MODIFICATO ✨
+def get_random_headers():
     return {
         "User-Agent": random.choice(USER_AGENTS),
         "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7"
     }
 
-def random_delay():  # ✨ MODIFICATO ✨
+def random_delay():
     delay = random.uniform(2, 5)
     logging.debug(f"🕒 Ritardo random di {delay:.2f} secondi")
     time.sleep(delay)
@@ -91,7 +93,6 @@ def carica_prodotti_salvati():
     if os.path.exists(FILE_PATH):
         with open(FILE_PATH, "r") as f:
             lines = f.readlines()
-
         nuovi_lines = []
         for line in lines:
             line = line.strip()
@@ -107,7 +108,6 @@ def carica_prodotti_salvati():
             except Exception as e:
                 logging.error(f"Errore nel parsing della linea '{line}': {e}")
                 continue
-
         with open(FILE_PATH, "w") as f:
             f.writelines(nuovi_lines)
         logging.debug(f"Prodotti salvati caricati: {len(prodotti)}")
@@ -141,19 +141,28 @@ def clean_amazon_url(url: str) -> str:
     return result
 
 # ==============================
-# FUNZIONE DI SCRAPING DEL PRODOTTO (OTTIMIZZATA)
+# FUNZIONE DI SCRAPING DEL PRODOTTO (OTTIMIZZATA CON RETRY)
 # ==============================
 def parse_amazon_product(url: str) -> dict:
     logging.debug(f"Inizio parsing prodotto: {url}")
     clean_url = url.split("?")[0]
-    headers = get_random_headers()  # ✨ MODIFICATO ✨
-    random_delay()  # ✨ MODIFICATO ✨
+    headers = get_random_headers()
+    random_delay()
+
+    session = requests.Session()
+    retry = Retry(
+        total=5,
+        backoff_factor=1,
+        status_forcelist=[500, 502, 503, 504],
+        allowed_methods=["GET"]
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
 
     try:
-        with requests.Session() as session:
-            response = session.get(clean_url, headers=headers, timeout=10)
-            response.raise_for_status()
-            logging.debug("Richiesta ad Amazon completata con successo")
+        response = session.get(clean_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        logging.debug("Richiesta ad Amazon completata con successo")
     except requests.RequestException as e:
         logging.error(f"Errore richiesta Amazon: {e}")
         return None
@@ -301,9 +310,9 @@ def controlla_prodotti():
         logging.debug("Fuori orario, uscita da controlla_prodotti")
         return
     try:
-        headers = get_random_headers()  # ✨ MODIFICATO ✨
-        random_delay()  # ✨ MODIFICATO ✨
-        risposta = requests.get(AMAZON_SEARCH_URL, headers=headers, timeout=10)  # ✨ MODIFICATO ✨
+        headers = get_random_headers()
+        random_delay()
+        risposta = requests.get(AMAZON_SEARCH_URL, headers=headers, timeout=10)
         risposta.raise_for_status()
         print("✅ Pagina Amazon caricata con successo.")
         logging.debug("Richiesta Amazon search completata")
@@ -346,7 +355,6 @@ def controlla_prodotti():
             continue
 
         print(f"💥 Prodotto con sconto > 15% trovato: {prezzo_corrente}€ vs {prezzo_originale}€ ({round(sconto)}%)")
-
         link_tag = prodotto.find("a", class_="a-link-normal")
         if link_tag and link_tag.get("href"):
             raw_link = "https://www.amazon.it" + link_tag.get("href")
