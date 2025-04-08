@@ -38,7 +38,7 @@ TIME_INTERVAL = 3600
 TEMPLATE_IMAGE_PATH = "template.png"
 
 # (Opzionale) Configurazione proxy, se necessario
-PROXIES = {}  # Ad esempio: {'http': 'http://localhost:8080', 'https': 'http://localhost:8080'}
+PROXIES = {}  # Esempio: {'http': 'http://proxy:port', 'https': 'http://proxy:port'}
 
 # ==============================
 # SESSION GLOBALE CON RETRY E COOKIE
@@ -46,13 +46,36 @@ PROXIES = {}  # Ad esempio: {'http': 'http://localhost:8080', 'https': 'http://l
 session = requests.Session()
 retry_strategy = Retry(
     total=5,
-    backoff_factor=2,  # Il backoff è aumentato per ridurre la frequenza dei retry
+    backoff_factor=2,  # Il backoff è aumentato per rallentare i retry
     status_forcelist=[500, 502, 503, 504],
     allowed_methods=["GET"]
 )
 adapter = HTTPAdapter(max_retries=retry_strategy)
 session.mount("https://", adapter)
 session.mount("http://", adapter)
+
+def initialize_session():
+    """
+    Effettua una richiesta alla homepage di Amazon per acquisire i cookie necessari.
+    """
+    try:
+        headers = {
+            "User-Agent": random.choice([
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:98.0) Gecko/20100101 Firefox/98.0"
+            ]),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7"
+        }
+        logging.debug("Inizializzo la sessione effettuando una GET sulla homepage di Amazon")
+        r = session.get("https://www.amazon.it/", headers=headers, timeout=10, proxies=PROXIES)
+        r.raise_for_status()
+        logging.debug("Cookie e headers acquisiti dalla homepage di Amazon")
+    except Exception as e:
+        logging.error(f"Errore durante l'inizializzazione della sessione: {e}")
+
+# Inizializza la sessione appena avviato lo script
+initialize_session()
 
 # ==============================
 # LISTA DI USER-AGENT RANDOM
@@ -66,18 +89,25 @@ USER_AGENTS = [
 ]
 
 def get_random_headers():
-    # Aggiungo ulteriori headers per emulare un browser completo
     return {
         "User-Agent": random.choice(USER_AGENTS),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1"
+        "Upgrade-Insecure-Requests": "1",
+        "Referer": "https://www.amazon.it/",
+        # Header specifici per browser moderni
+        "sec-ch-ua": '"Chromium";v="112", "Google Chrome";v="112", "Not:A-Brand";v="99"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
     }
 
 def random_delay():
-    # Incremento il delay per cercare di sfuggire a eventuali blocchi
     delay = random.uniform(3, 7)
     logging.debug(f"🕒 Ritardo random di {delay:.2f} secondi")
     time.sleep(delay)
