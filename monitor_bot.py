@@ -108,7 +108,7 @@ def get_random_headers():
     }
 
 def random_delay():
-    delay = random.uniform(3, 7)
+    delay = random.uniform(7, 20)
     logging.debug(f"🕒 Ritardo random di {delay:.2f} secondi")
     time.sleep(delay)
 
