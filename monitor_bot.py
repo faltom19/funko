@@ -38,6 +38,20 @@ TIME_INTERVAL = 3600
 TEMPLATE_IMAGE_PATH = "template.png"
 
 # ==============================
+# SESSION GLOBALE CON RETRY E COOKIE
+# ==============================
+session = requests.Session()
+retry_strategy = Retry(
+    total=5,
+    backoff_factor=2,  # Backoff aumentato per rallentare i retry
+    status_forcelist=[500, 502, 503, 504],
+    allowed_methods=["GET"]
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+session.mount("https://", adapter)
+session.mount("http://", adapter)
+
+# ==============================
 # LISTA DI USER-AGENT RANDOM
 # ==============================
 USER_AGENTS = [
@@ -49,13 +63,19 @@ USER_AGENTS = [
 ]
 
 def get_random_headers():
+    # Aggiungo ulteriori headers per emulare un browser completo
     return {
         "User-Agent": random.choice(USER_AGENTS),
-        "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7"
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
     }
 
 def random_delay():
-    delay = random.uniform(2, 5)
+    # Per evitare di essere bloccati, incremento ulteriormente il delay a volte critico
+    delay = random.uniform(3, 7)
     logging.debug(f"🕒 Ritardo random di {delay:.2f} secondi")
     time.sleep(delay)
 
@@ -141,23 +161,13 @@ def clean_amazon_url(url: str) -> str:
     return result
 
 # ==============================
-# FUNZIONE DI SCRAPING DEL PRODOTTO (OTTIMIZZATA CON RETRY)
+# FUNZIONE DI SCRAPING DEL PRODOTTO (CON SESSIONE GLOBALE)
 # ==============================
 def parse_amazon_product(url: str) -> dict:
     logging.debug(f"Inizio parsing prodotto: {url}")
     clean_url = url.split("?")[0]
     headers = get_random_headers()
     random_delay()
-
-    session = requests.Session()
-    retry = Retry(
-        total=5,
-        backoff_factor=1,
-        status_forcelist=[500, 502, 503, 504],
-        allowed_methods=["GET"]
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
 
     try:
         response = session.get(clean_url, headers=headers, timeout=10)
@@ -241,7 +251,7 @@ def compose_image(product_data: dict) -> bytes:
         return None
     try:
         template_img = Image.open(TEMPLATE_IMAGE_PATH).convert("RGB")
-        response = requests.get(image_url, stream=True, timeout=10)
+        response = session.get(image_url, stream=True, timeout=10)
         response.raise_for_status()
         product_img = Image.open(BytesIO(response.content)).convert("RGB")
         orig_width, orig_height = product_img.size
@@ -271,7 +281,7 @@ def send_to_telegram(message, photo_bytes=None):
         data = {"chat_id": CHANNEL_ID, "caption": message, "parse_mode": "HTML"}
         files = {"photo": ("image.png", photo_bytes, "image/png")}
         try:
-            response = requests.post(url, data=data, files=files)
+            response = session.post(url, data=data, files=files)
             response.raise_for_status()
             logging.debug("Messaggio con foto inviato a Telegram")
         except requests.RequestException as e:
@@ -280,7 +290,7 @@ def send_to_telegram(message, photo_bytes=None):
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": CHANNEL_ID, "text": message, "parse_mode": "HTML"}
         try:
-            response = requests.post(url, data=data)
+            response = session.post(url, data=data)
             response.raise_for_status()
             logging.debug("Messaggio di testo inviato a Telegram")
         except requests.RequestException as e:
@@ -312,7 +322,7 @@ def controlla_prodotti():
     try:
         headers = get_random_headers()
         random_delay()
-        risposta = requests.get(AMAZON_SEARCH_URL, headers=headers, timeout=10)
+        risposta = session.get(AMAZON_SEARCH_URL, headers=headers, timeout=10)
         risposta.raise_for_status()
         print("✅ Pagina Amazon caricata con successo.")
         logging.debug("Richiesta Amazon search completata")
