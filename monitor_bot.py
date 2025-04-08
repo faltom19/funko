@@ -37,13 +37,16 @@ AMAZON_SEARCH_URL = "https://www.amazon.it/s?k=funko+pop"
 TIME_INTERVAL = 3600
 TEMPLATE_IMAGE_PATH = "template.png"
 
+# (Opzionale) Configurazione proxy, se necessario
+PROXIES = {}  # Ad esempio: {'http': 'http://localhost:8080', 'https': 'http://localhost:8080'}
+
 # ==============================
 # SESSION GLOBALE CON RETRY E COOKIE
 # ==============================
 session = requests.Session()
 retry_strategy = Retry(
     total=5,
-    backoff_factor=2,  # Backoff aumentato per rallentare i retry
+    backoff_factor=2,  # Il backoff è aumentato per ridurre la frequenza dei retry
     status_forcelist=[500, 502, 503, 504],
     allowed_methods=["GET"]
 )
@@ -74,7 +77,7 @@ def get_random_headers():
     }
 
 def random_delay():
-    # Per evitare di essere bloccati, incremento ulteriormente il delay a volte critico
+    # Incremento il delay per cercare di sfuggire a eventuali blocchi
     delay = random.uniform(3, 7)
     logging.debug(f"🕒 Ritardo random di {delay:.2f} secondi")
     time.sleep(delay)
@@ -170,7 +173,7 @@ def parse_amazon_product(url: str) -> dict:
     random_delay()
 
     try:
-        response = session.get(clean_url, headers=headers, timeout=10)
+        response = session.get(clean_url, headers=headers, timeout=10, proxies=PROXIES)
         response.raise_for_status()
         logging.debug("Richiesta ad Amazon completata con successo")
     except requests.RequestException as e:
@@ -251,7 +254,7 @@ def compose_image(product_data: dict) -> bytes:
         return None
     try:
         template_img = Image.open(TEMPLATE_IMAGE_PATH).convert("RGB")
-        response = session.get(image_url, stream=True, timeout=10)
+        response = session.get(image_url, stream=True, timeout=10, proxies=PROXIES)
         response.raise_for_status()
         product_img = Image.open(BytesIO(response.content)).convert("RGB")
         orig_width, orig_height = product_img.size
@@ -281,7 +284,7 @@ def send_to_telegram(message, photo_bytes=None):
         data = {"chat_id": CHANNEL_ID, "caption": message, "parse_mode": "HTML"}
         files = {"photo": ("image.png", photo_bytes, "image/png")}
         try:
-            response = session.post(url, data=data, files=files)
+            response = session.post(url, data=data, files=files, proxies=PROXIES)
             response.raise_for_status()
             logging.debug("Messaggio con foto inviato a Telegram")
         except requests.RequestException as e:
@@ -290,7 +293,7 @@ def send_to_telegram(message, photo_bytes=None):
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": CHANNEL_ID, "text": message, "parse_mode": "HTML"}
         try:
-            response = session.post(url, data=data)
+            response = session.post(url, data=data, proxies=PROXIES)
             response.raise_for_status()
             logging.debug("Messaggio di testo inviato a Telegram")
         except requests.RequestException as e:
@@ -322,7 +325,7 @@ def controlla_prodotti():
     try:
         headers = get_random_headers()
         random_delay()
-        risposta = session.get(AMAZON_SEARCH_URL, headers=headers, timeout=10)
+        risposta = session.get(AMAZON_SEARCH_URL, headers=headers, timeout=10, proxies=PROXIES)
         risposta.raise_for_status()
         print("✅ Pagina Amazon caricata con successo.")
         logging.debug("Richiesta Amazon search completata")
