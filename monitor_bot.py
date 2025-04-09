@@ -193,6 +193,15 @@ def clean_amazon_url(url: str) -> str:
     logging.debug(f"Pulizia URL (senza sspa/click): {url} -> {result}")
     return result
 
+def extract_asin(url: str) -> str:
+    """
+    Estrae l'ASIN dal link Amazon, se presente.
+    """
+    m = re.search(r"/dp/(\w{10})", url)
+    if m:
+        return m.group(1)
+    return None
+
 # ==============================
 # FUNZIONE DI SCRAPING DEL PRODOTTO (CON SESSIONE GLOBALE)
 # ==============================
@@ -214,7 +223,7 @@ def parse_amazon_product(url: str) -> dict:
     data = {}
 
     title_tag = soup.find(id="productTitle")
-    data["title"] = title_tag.get_text(strip=True) if title_tag else "Titolo non trovato"
+    data["title"] = title_tag.get_text(strip=True) if title_tag else ""
     logging.debug(f"Titolo prodotto: {data['title']}")
 
     price_tag = soup.select_one("#priceblock_ourprice, #priceblock_dealprice, #priceblock_saleprice, span.a-price span.a-offscreen")
@@ -331,9 +340,20 @@ def send_to_telegram(message, photo_bytes=None):
 
 def post_product(product_link: str):
     logging.debug(f"Post prodotto: {product_link}")
-    product_data = parse_amazon_product(product_link)
-    if not product_data:
-        logging.error("Dati prodotto non trovati, interrompo post_product")
+    max_retries = 3
+    retry = 0
+    product_data = None
+    # Riprova lo scraping se il titolo risulta vuoto
+    while retry < max_retries:
+        product_data = parse_amazon_product(product_link)
+        if product_data and product_data.get("title"):
+            if product_data.get("title").strip() != "":
+                break
+        retry += 1
+        logging.debug(f"Retry {retry} per lo scraping del prodotto: {product_link}")
+        time.sleep(2)
+    if not product_data or product_data.get("title").strip() == "":
+        logging.error("Dati prodotto non validi dopo 3 tentativi, salto questo prodotto.")
         return
     message = build_telegram_message(product_data)
     photo_bytes = compose_image(product_data)
@@ -402,15 +422,21 @@ def controlla_prodotti():
         if link_tag and link_tag.get("href"):
             raw_link = "https://www.amazon.it" + link_tag.get("href")
             clean_link = clean_amazon_url(raw_link)
-            if clean_link in prodotti_salvati:
-                saved_time = prodotti_salvati[clean_link]
-                delta = (ora_corrente - saved_time).total_seconds()
-                if delta < 72 * 3600:
-                    print("⏩ Prodotto già pubblicato di recente, salto.")
-                    continue
+            # Controllo duplicati migliorato: controllo per link esatto o ASIN corrispondente
+            asin_new = extract_asin(clean_link)
+            duplicate = False
+            for saved_link in prodotti_salvati.keys():
+                asin_saved = extract_asin(saved_link)
+                if asin_new and asin_saved and asin_new == asin_saved:
+                    duplicate = True
+                    break
+            if duplicate or (clean_link in prodotti_salvati):
+                print("⏩ Prodotto già pubblicato di recente, salto.")
+                continue
             print(f"📨 Invio prodotto: {clean_link}")
             salva_prodotto(clean_link, ora_corrente)
             post_product(clean_link)
+            # Una volta pubblicato un prodotto valido si esce dal ciclo
             break
     print("✅ Controllo prodotti completato.\n")
 
