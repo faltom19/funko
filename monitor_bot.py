@@ -20,7 +20,7 @@ from telegram import Bot
 # CONFIGURAZIONE SICURA
 # ==============================
 load_dotenv()  # carica .env in os.environ :contentReference[oaicite:6]{index=6}
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_BOT_TOKEN = os.getenv("7861319577:AAEd-RY5TcD7_GlN5EKzErRTTrYvHeQ73-k")
 CHANNEL_ID          = os.getenv("CHANNEL_ID", "@fpitcanale")
 REF_TAG             = os.getenv("REF_TAG", "funkoitalia0c-21")
 AMAZON_SEARCH_URL   = "https://www.amazon.it/s?k=funko+pop"
