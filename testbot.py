@@ -6,7 +6,7 @@ import gc  # Garbage collector
 from io import BytesIO
 from PIL import Image
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters
+from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
 # ==============================
 # CONFIGURAZIONE
@@ -18,12 +18,45 @@ REF_TAG = "funkoitalia0c-21"
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
+# Amazon domains patterns
+AMAZON_DOMAINS = [
+    r"https?://(?:www\.)?amazon\.(?:it|com|co\.uk|de|fr|es)/"
+]
+
+# Regex to extract ASIN or full URL
+SHORT_URL_REGEX = re.compile(r"https?://amzn\.to/([A-Za-z0-9]+)")
+
+# ==============================
+# HELPER FUNCTIONS
+# ==============================
+def expand_short_url(url: str) -> str:
+    """
+    Expande un link abbreviato amzn.to usando una richiesta HEAD.
+    """
+    try:
+        resp = requests.head(url, allow_redirects=True, timeout=5)
+        return resp.url
+    except requests.RequestException as e:
+        logger.warning(f"Impossibile espandere URL abbreviato {url}: {e}")
+        return url
+
+
+def is_amazon_url(url: str) -> bool:
+    """
+    Verifica se l'URL appartiene a un dominio Amazon supportato.
+    """
+    for pattern in AMAZON_DOMAINS:
+        if re.match(pattern, url):
+            return True
+    return False
 
 # ==============================
 # FUNZIONE DI SCRAPING
 # ==============================
 def parse_amazon_product(url: str) -> dict:
+    # Rimuoviamo parametri di tracking
     clean_url = url.split("?")[0]
     headers = {
         "User-Agent": (
@@ -38,64 +71,61 @@ def parse_amazon_product(url: str) -> dict:
             response = session.get(clean_url, headers=headers, timeout=10)
             response.raise_for_status()
     except requests.RequestException as e:
-        logging.error(f"Errore richiesta Amazon: {e}")
+        logger.error(f"Errore richiesta Amazon: {e}")
         return None
 
     soup = BeautifulSoup(response.text, "html.parser")
     data = {}
 
+    # Titolo prodotto
     title_tag = soup.find(id="productTitle")
-    data["title"] = (
-        title_tag.get_text(strip=True) if title_tag else "Titolo non trovato"
-    )
+    data["title"] = title_tag.get_text(strip=True) if title_tag else "Titolo non trovato"
 
+    # Prezzo corrente
     price_tag = soup.select_one(
         "#priceblock_ourprice, #priceblock_dealprice, #priceblock_saleprice, span.a-price span.a-offscreen"
     )
-    if price_tag:
-        data["price"] = price_tag.get_text(strip=True)
-    else:
-        data["price"] = "Prezzo non disponibile"
+    data["price"] = price_tag.get_text(strip=True) if price_tag else "Prezzo non disponibile"
 
+    # Prezzo di listino
     list_price_tag = soup.select_one(
         "span.priceBlockStrikePriceString, span.a-price.a-text-price span.a-offscreen"
     )
-    if list_price_tag:
-        data["list_price"] = list_price_tag.get_text(strip=True)
-    else:
-        data["list_price"] = None
+    data["list_price"] = list_price_tag.get_text(strip=True) if list_price_tag else None
 
+    # Recensioni
     review_tag = soup.select_one("#acrCustomerReviewText")
     data["reviews"] = review_tag.get_text(strip=True) if review_tag else "0 recensioni"
 
+    # Immagine
     meta_image_tag = soup.find("meta", property="og:image")
-    if meta_image_tag and "content" in meta_image_tag.attrs:
+    if meta_image_tag and meta_image_tag.get("content"):
         data["image_url"] = meta_image_tag["content"]
     else:
         landing_image = soup.select_one("#imgTagWrapperId img, #landingImage")
-        data["image_url"] = (
-            landing_image["src"]
-            if landing_image and "src" in landing_image.attrs
-            else None
-        )
+        data["image_url"] = landing_image["src"] if landing_image and landing_image.get("src") else None
 
+    # Link di affiliazione
     data["ref_link"] = f"{clean_url}?tag={REF_TAG}"
 
     return data
 
-
 # ==============================
 # GESTORE DEI MESSAGGI
 # ==============================
-async def handle_message(update: Update, context):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
-    if "amazon." not in text:
+    # Gestione link abbreviato amzn.to
+    if SHORT_URL_REGEX.search(text):
+        text = expand_short_url(text)
+
+    # Verifica URL Amazon
+    if not is_amazon_url(text):
         await update.message.reply_text("Per favore, inviami un link di Amazon valido.")
         return
 
     product_data = parse_amazon_product(text)
-
     if not product_data:
         await update.message.reply_text(
             "Impossibile ottenere i dati dal link fornito. Riprova più tardi."
@@ -103,26 +133,22 @@ async def handle_message(update: Update, context):
         return
 
     # Pulizia del titolo
-    title = product_data["title"]
+    title = re.sub(r"- Figura in Vinile.*", "", product_data["title"])  # rimuove "- Figura in Vinile"
     title = title.replace("Animation: ", "").strip()
 
-    # Rimuove tutto ciò che viene dopo (e incluso) "- Figura in Vinile"
-    title = re.sub(r"- Figura in Vinile.*", "", title).strip()
-
     price = product_data["price"]
-    list_price = product_data["list_price"]
+    list_price = product_data.get("list_price")
     reviews = product_data["reviews"]
     ref_link = product_data["ref_link"]
-    image_url = product_data["image_url"]
+    image_url = product_data.get("image_url")
 
+    # Costruzione messaggio
     msg_lines = [f"📍 <b>{title}</b>\n"]
-
-    if list_price and "non disponibile" not in price.lower():
+    if list_price:
         try:
-            original_price = float(re.sub(r"[^\d,]", "", list_price).replace(",", "."))
-            current_price = float(re.sub(r"[^\d,]", "", price).replace(",", "."))
-            discount = round(100 - (current_price / original_price * 100))
-
+            orig = float(re.sub(r"[^\d,]", "", list_price).replace(",", "."))
+            curr = float(re.sub(r"[^\d,]", "", price).replace(",", "."))
+            discount = round(100 - (curr / orig * 100))
             if discount > 0:
                 msg_lines.append(f"🔻 Sconto: {discount}%")
                 msg_lines.append(f"✂️ <s>{list_price}</s> → <b>{price}</b>\n")
@@ -135,41 +161,27 @@ async def handle_message(update: Update, context):
 
     msg_lines.append(f'🔗 <a href="{ref_link}">Acquista ora su Amazon</a>')
     msg_lines.append(f"⭐ {reviews}")
-
     final_message = "\n".join(msg_lines)
 
+    # Invia con o senza immagine
     if image_url:
         try:
-            # Apri il template dal file sul server
+            # Caricamento e combinazione immagini
             with open("template.png", "rb") as f:
                 template_img = Image.open(f).convert("RGB")
+            resp = requests.get(image_url, stream=True, timeout=10)
+            resp.raise_for_status()
+            prod_img = Image.open(BytesIO(resp.content)).convert("RGB")
 
-            # Scarica l'immagine del prodotto in memoria
-            response = requests.get(image_url, stream=True, timeout=10)
-            response.raise_for_status()
-            product_img = Image.open(BytesIO(response.content)).convert("RGB")
+            # Ridimensionamento
+            w, h = prod_img.size
+            factor = min(template_img.width / w, template_img.height / h, 2)
+            new_size = (int(w * factor), int(h * factor))
+            prod_img = prod_img.resize(new_size, Image.LANCZOS)
+            x = (template_img.width - new_size[0]) // 2
+            y = (template_img.height - new_size[1]) // 2
+            template_img.paste(prod_img, (x, y))
 
-            # Ottieni le dimensioni originali dell'immagine del prodotto
-            orig_width, orig_height = product_img.size
-
-            # Fattore di scala (x2)
-            scale_factor = 2
-
-            # Calcola la nuova dimensione scalata mantenendo le proporzioni
-            new_width = min(template_img.width, orig_width * scale_factor)
-            new_height = min(template_img.height, orig_height * scale_factor)
-
-            # Ridimensiona l'immagine del prodotto mantenendo le proporzioni
-            product_img = product_img.resize((new_width, new_height), Image.LANCZOS)
-
-            # Calcola la posizione per centrare l'immagine nel template
-            pos_x = (template_img.width - new_width) // 2
-            pos_y = (template_img.height - new_height) // 2
-
-            # Incolla l'immagine del prodotto sul template
-            template_img.paste(product_img, (pos_x, pos_y))
-
-            # Salva l'immagine combinata in un buffer in memoria
             buf = BytesIO()
             template_img.save(buf, format="PNG")
             buf.seek(0)
@@ -178,7 +190,7 @@ async def handle_message(update: Update, context):
                 chat_id=CHANNEL_ID, photo=buf, caption=final_message, parse_mode="HTML"
             )
         except Exception as e:
-            logging.error(f"Errore invio foto: {e}")
+            logger.error(f"Errore invio foto: {e}")
             await context.bot.send_message(
                 chat_id=CHANNEL_ID, text=final_message, parse_mode="HTML"
             )
@@ -187,8 +199,8 @@ async def handle_message(update: Update, context):
             chat_id=CHANNEL_ID, text=final_message, parse_mode="HTML"
         )
 
+    # Forza garbage collection
     gc.collect()
-
 
 # ==============================
 # FUNZIONE PRINCIPALE
@@ -196,17 +208,8 @@ async def handle_message(update: Update, context):
 def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("Bot in esecuzione...")
+    logger.info("Bot in esecuzione...")
     app.run_polling(poll_interval=3, timeout=10, drop_pending_updates=True)
-
 
 if __name__ == "__main__":
     main()
-
-    #  source myenv/bin/activate
-    #  cd funko/
-    #  nohup python testbot.py &
-
-# pip install requests beautifulsoup4 pillow python-telegram-bot
-
-# pip3 install requests beautifulsoup4 pillow python-telegram-bot
