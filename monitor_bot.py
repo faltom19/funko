@@ -1,3 +1,4 @@
+
 import requests
 from bs4 import BeautifulSoup
 import datetime
@@ -13,6 +14,18 @@ import random
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+# Configurazione logging: output sia su file che su console
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("monitor_bot_debug.log"),
+        logging.StreamHandler()
+    ]
+)
+
+logging.debug("Avvio dello script monitor_bot")
+
 # ==============================
 # CONFIGURAZIONE
 # ==============================
@@ -24,34 +37,49 @@ REF_TAG = "funkoitalia0c-21"
 AMAZON_SEARCH_URL = "https://www.amazon.it/s?k=funko+pop"
 TIME_INTERVAL = 3600
 TEMPLATE_IMAGE_PATH = "template.png"
-RETENTION_SECONDS = 5 * 24 * 3600  # 5 giorni
-PROXIES = {}
+
+# (Opzionale) Configurazione proxy, se necessario
+PROXIES = {}  # Esempio: {'http': 'http://proxy:port', 'https': 'http://proxy:port'}
 
 # ==============================
-# LOGGING
-# ==============================
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler("monitor_bot_debug.log"), logging.StreamHandler()]
-)
-
-# ==============================
-# SESSION CON RETRY
+# SESSION GLOBALE CON RETRY E COOKIE
 # ==============================
 session = requests.Session()
 retry_strategy = Retry(
     total=5,
-    backoff_factor=2,
+    backoff_factor=2,  # Il backoff è aumentato per rallentare i retry
     status_forcelist=[500, 502, 503, 504],
-    allowed_methods=["GET", "POST"]
+    allowed_methods=["GET"]
 )
 adapter = HTTPAdapter(max_retries=retry_strategy)
 session.mount("https://", adapter)
 session.mount("http://", adapter)
 
+def initialize_session():
+    """
+    Effettua una richiesta alla homepage di Amazon per acquisire i cookie necessari.
+    """
+    try:
+        headers = {
+            "User-Agent": random.choice([
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:98.0) Gecko/20100101 Firefox/98.0"
+            ]),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7"
+        }
+        logging.debug("Inizializzo la sessione effettuando una GET sulla homepage di Amazon")
+        r = session.get("https://www.amazon.it/", headers=headers, timeout=10, proxies=PROXIES)
+        r.raise_for_status()
+        logging.debug("Cookie e headers acquisiti dalla homepage di Amazon")
+    except Exception as e:
+        logging.error(f"Errore durante l'inizializzazione della sessione: {e}")
+
+# Inizializza la sessione appena avviato lo script
+initialize_session()
+
 # ==============================
-# USER-AGENTS & HEADERS
+# LISTA DI USER-AGENT RANDOM
 # ==============================
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36",
@@ -68,7 +96,9 @@ def get_random_headers():
         "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
         "Referer": "https://www.amazon.it/",
+        # Header specifici per browser moderni
         "sec-ch-ua": '"Chromium";v="112", "Google Chrome";v="112", "Not:A-Brand";v="99"',
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
@@ -80,170 +110,209 @@ def get_random_headers():
 
 def random_delay():
     delay = random.uniform(7, 20)
-    logging.debug(f"Delay random: {delay:.2f}s")
+    logging.debug(f"🕒 Ritardo random di {delay:.2f} secondi")
     time.sleep(delay)
 
 # ==============================
-# FUNZIONI PREZZO
+# FUNZIONI UTILI PER IL PREZZO
 # ==============================
-def estrai_float(valore: str) -> float:
+def estrai_float(valore):
     try:
-        v = valore.replace("€", "").strip().replace(".", "").replace(",", ".")
-        return float(v)
+        valore = valore.replace("€", "").strip()
+        valore = valore.replace(".", "").replace(",", ".")
+        result = float(valore)
+        logging.debug(f"estrai_float: convertito '{valore}' in {result}")
+        return result
     except Exception as e:
-        logging.error(f"estrai_float errore su '{valore}': {e}")
+        logging.error(f"estrai_float: errore con valore '{valore}': {e}")
         return None
 
-
-def estrai_prezzo(intero_tag, decimale_tag) -> float:
-    intero = intero_tag.get_text().strip().rstrip('.,')
-    fraz = decimale_tag.get_text().strip()
-    testo = f"{intero},{fraz}"
-    return estrai_float(testo)
+def estrai_prezzo(parte_intera_tag, parte_decimale_tag):
+    intero = parte_intera_tag.get_text().strip()
+    fraz = parte_decimale_tag.get_text().strip()
+    if intero and intero[-1] in [".", ","]:
+        intero = intero[:-1]
+    prezzo_testo = intero + "," + fraz
+    result = estrai_float(prezzo_testo)
+    logging.debug(f"estrai_prezzo: '{prezzo_testo}' convertito in {result}")
+    return result
 
 # ==============================
-# GESTIONE FILE
+# GESTIONE FILE DI LOG
 # ==============================
-def carica_prodotti_salvati() -> dict:
-    now = datetime.datetime.now()
+def carica_prodotti_salvati():
+    logging.debug("Caricamento prodotti salvati")
     prodotti = {}
+    ora_attuale = datetime.datetime.now()
     if os.path.exists(FILE_PATH):
-        with open(FILE_PATH) as f:
+        with open(FILE_PATH, "r") as f:
             lines = f.readlines()
-        valid = []
+        nuovi_lines = []
         for line in lines:
-            try:
-                ts_str, link = line.strip().split(DELIMITER, 1)
-                ts = datetime.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-                if (now - ts).total_seconds() < RETENTION_SECONDS:
-                    prodotti[link] = ts
-                    valid.append(line)
-            except Exception:
+            line = line.strip()
+            if not line:
                 continue
-        with open(FILE_PATH, 'w') as f:
-            f.writelines(valid)
+            try:
+                timestamp_str, link = line.split(DELIMITER, 1)
+                timestamp = datetime.datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                delta = (ora_attuale - timestamp).total_seconds()
+                if delta < 72 * 3600:
+                    prodotti[link] = timestamp
+                    nuovi_lines.append(line + "\n")
+            except Exception as e:
+                logging.error(f"Errore nel parsing della linea '{line}': {e}")
+                continue
+        with open(FILE_PATH, "w") as f:
+            f.writelines(nuovi_lines)
+        logging.debug(f"Prodotti salvati caricati: {len(prodotti)}")
+    else:
+        logging.debug("File dei prodotti non esiste, verrà creato.")
     return prodotti
 
-
-def salva_prodotto(link: str, ts: datetime.datetime):
-    with open(FILE_PATH, 'a') as f:
-        f.write(f"{ts.strftime('%Y-%m-%d %H:%M:%S')}{DELIMITER}{link}\n")
+def salva_prodotto(link, timestamp):
+    try:
+        with open(FILE_PATH, "a") as f:
+            f.write(f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')}{DELIMITER}{link}\n")
+        logging.debug(f"Salvato prodotto: {link} a {timestamp}")
+    except Exception as e:
+        logging.error(f"Errore nel salvataggio del prodotto {link}: {e}")
 
 # ==============================
-# PULIZIA URL & ASIN
+# PULIZIA DELL'URL AMAZON
 # ==============================
 def clean_amazon_url(url: str) -> str:
-    p = urlparse(url)
-    if "sspa/click" in p.path:
-        qs = parse_qs(p.query)
+    parsed = urlparse(url)
+    if "sspa/click" in parsed.path:
+        qs = parse_qs(parsed.query)
         if "url" in qs:
-            return unquote(qs['url'][0].split('?')[0])
-    return url.split('?')[0]
-
+            product_path = qs["url"][0]
+            product_path = unquote(product_path)
+            clean_url = "https://www.amazon.it" + product_path
+            logging.debug(f"Pulizia URL: {url} -> {clean_url}")
+            return clean_url
+    result = url.split("?")[0]
+    logging.debug(f"Pulizia URL (senza sspa/click): {url} -> {result}")
+    return result
 
 def extract_asin(url: str) -> str:
+    """
+    Estrae l'ASIN dal link Amazon, se presente.
+    """
     m = re.search(r"/dp/(\w{10})", url)
-    return m.group(1) if m else None
+    if m:
+        return m.group(1)
+    return None
 
 # ==============================
-# SCRAPING PRODOTTO
+# FUNZIONE DI SCRAPING DEL PRODOTTO (CON SESSIONE GLOBALE)
 # ==============================
 def parse_amazon_product(url: str) -> dict:
-    clean = clean_amazon_url(url)
+    logging.debug(f"Inizio parsing prodotto: {url}")
+    clean_url = url.split("?")[0]
     headers = get_random_headers()
     random_delay()
+
     try:
-        r = session.get(clean, headers=headers, timeout=10, proxies=PROXIES)
-        r.raise_for_status()
-    except Exception as e:
-        logging.error(f"Errore scraping {clean}: {e}")
+        response = session.get(clean_url, headers=headers, timeout=10, proxies=PROXIES)
+        response.raise_for_status()
+        logging.debug("Richiesta ad Amazon completata con successo")
+    except requests.RequestException as e:
+        logging.error(f"Errore richiesta Amazon: {e}")
         return None
 
-    soup = BeautifulSoup(r.text, 'html.parser')
-    # Titolo
-    title_el = soup.find(id='productTitle')
-    title = title_el.get_text(strip=True) if title_el else None
-    # Prezzo corrente
-    price_el = soup.select_one(
-        '#priceblock_ourprice, #priceblock_dealprice, #priceblock_saleprice, span.a-price span.a-offscreen'
-    )
-    price = price_el.get_text(strip=True) if price_el else None
-    # List price
-    list_price_el = soup.select_one(
-        'span.priceBlockStrikePriceString, span.a-price.a-text-price span.a-offscreen'
-    )
-    list_price = list_price_el.get_text(strip=True) if list_price_el else None
-    # Recensioni
-    review_el = soup.select_one('#acrCustomerReviewText')
-    reviews = review_el.get_text(strip=True) if review_el else '0 recensioni'
-    # Immagine
-    meta_img = soup.find('meta', property='og:image')
-    if meta_img and meta_img.get('content'):
-        image_url = meta_img['content']
+    soup = BeautifulSoup(response.text, "html.parser")
+    data = {}
+
+    title_tag = soup.find(id="productTitle")
+    data["title"] = title_tag.get_text(strip=True) if title_tag else ""
+    logging.debug(f"Titolo prodotto: {data['title']}")
+
+    price_tag = soup.select_one("#priceblock_ourprice, #priceblock_dealprice, #priceblock_saleprice, span.a-price span.a-offscreen")
+    data["price"] = price_tag.get_text(strip=True) if price_tag else "Prezzo non disponibile"
+    logging.debug(f"Prezzo prodotto: {data['price']}")
+
+    list_price_tag = soup.select_one("span.priceBlockStrikePriceString, span.a-price.a-text-price span.a-offscreen")
+    data["list_price"] = list_price_tag.get_text(strip=True) if list_price_tag else None
+    logging.debug(f"List price: {data['list_price']}")
+
+    review_tag = soup.select_one("#acrCustomerReviewText")
+    data["reviews"] = review_tag.get_text(strip=True) if review_tag else "0 recensioni"
+    logging.debug(f"Reviews: {data['reviews']}")
+
+    meta_image_tag = soup.find("meta", property="og:image")
+    if meta_image_tag and "content" in meta_image_tag.attrs:
+        data["image_url"] = meta_image_tag["content"]
     else:
-        img_tag = soup.select_one('#imgTagWrapperId img, #landingImage')
-        image_url = img_tag['src'] if img_tag and img_tag.get('src') else None
+        landing_image = soup.select_one("#imgTagWrapperId img, #landingImage")
+        data["image_url"] = landing_image["src"] if landing_image and "src" in landing_image.attrs else None
+    logging.debug(f"Image URL: {data['image_url']}")
 
-    return {
-        'title': title,
-        'price': price,
-        'list_price': list_price,
-        'reviews': reviews,
-        'image_url': image_url,
-        'ref_link': f"{clean}?tag={REF_TAG}"
-    }
+    data["ref_link"] = f"{clean_url}?tag={REF_TAG}"
+    logging.debug(f"Ref link: {data['ref_link']}")
+
+    return data
 
 # ==============================
-# MESSAGGIO & IMMAGINE
+# COSTRUZIONE DEL MESSAGGIO E COMPOSIZIONE DELL'IMMAGINE
 # ==============================
-def build_telegram_message(d: dict) -> str:
-    title = d.get('title', '').replace("Animation: ", "").strip()
-    title = re.sub(r"- Figura in Vinile.*", "", title)
-    lines = [f"📍 <b>{title}</b>\n"]
-    price = d.get('price')
-    list_price = d.get('list_price')
-    if list_price and price:
-        o = estrai_float(list_price)
-        c = estrai_float(price)
-        if o and c:
-            disc = round(100 - (c / o * 100))
-            if disc > 0:
-                lines.append(f"🔻 Sconto: {disc}%")
-                lines.append(f"✂️ <s>{list_price}</s> → <b>{price}</b>\n")
+def build_telegram_message(product_data: dict) -> str:
+    logging.debug("Costruzione messaggio Telegram")
+    title = product_data.get("title", "Titolo non trovato")
+    title = title.replace("Animation: ", "").strip()
+    title = re.sub(r"- Figura in Vinile.*", "", title).strip()
+    price = product_data.get("price", "Prezzo non disponibile")
+    list_price = product_data.get("list_price")
+    reviews = product_data.get("reviews", "")
+    msg_lines = [f"📍 <b>{title}</b>\n"]
+    if list_price and "non disponibile" not in price.lower():
+        try:
+            original_price = float(re.sub(r"[^\d,]", "", list_price).replace(",", "."))
+            current_price = float(re.sub(r"[^\d,]", "", price).replace(",", "."))
+            discount = round(100 - (current_price / original_price * 100))
+            if discount > 0:
+                msg_lines.append(f"🔻 Sconto: {discount}%")
+                msg_lines.append(f"✂️ <s>{list_price}</s> → <b>{price}</b>\n")
             else:
-                lines.append(f"💰 <b>{price}</b>\n")
-        else:
-            lines.append(f"💰 <b>{price}</b>\n")
+                msg_lines.append(f"💰 <b>{price}</b>\n")
+        except ValueError as e:
+            logging.error(f"Errore nel calcolo del discount: {e}")
+            msg_lines.append(f"💰 <b>{price}</b>\n")
     else:
-        lines.append(f"💰 <b>{price or 'Prezzo non disponibile'}</b>\n")
-    lines.append(f"🔗 <a href=\"{d.get('ref_link')}\">Acquista ora</a>")
-    lines.append(f"⭐ {d.get('reviews')}")
-    return "\n".join(lines)
+        msg_lines.append(f"💰 <b>{price}</b>\n")
+    ref_link = product_data.get("ref_link", "")
+    msg_lines.append(f'🔗 <a href="{ref_link}">Acquista ora su Amazon</a>')
+    msg_lines.append(f"⭐ {reviews}")
+    message = "\n".join(msg_lines)
+    logging.debug(f"Messaggio Telegram costruito: {message}")
+    return message
 
-
-def compose_image(d: dict) -> bytes:
-    url = d.get('image_url')
-    if not url:
+def compose_image(product_data: dict) -> bytes:
+    logging.debug("Composizione immagine prodotto")
+    image_url = product_data.get("image_url")
+    if not image_url:
+        logging.debug("Nessun URL immagine trovato")
         return None
     try:
-        tpl = Image.open(TEMPLATE_IMAGE_PATH).convert('RGB')
-        r = session.get(url, stream=True, timeout=10, proxies=PROXIES)
-        r.raise_for_status()
-        pi = Image.open(BytesIO(r.content)).convert('RGB')
-        w, h = pi.size
-        sf = 2
-        nw = min(tpl.width, w * sf)
-        nh = min(tpl.height, h * sf)
-        pi = pi.resize((nw, nh), Image.LANCZOS)
-        tpl.paste(pi, ((tpl.width - nw) // 2, (tpl.height - nh) // 2))
+        template_img = Image.open(TEMPLATE_IMAGE_PATH).convert("RGB")
+        response = session.get(image_url, stream=True, timeout=10, proxies=PROXIES)
+        response.raise_for_status()
+        product_img = Image.open(BytesIO(response.content)).convert("RGB")
+        orig_width, orig_height = product_img.size
+        scale_factor = 2
+        new_width = min(template_img.width, orig_width * scale_factor)
+        new_height = min(template_img.height, orig_height * scale_factor)
+        product_img = product_img.resize((new_width, new_height), Image.LANCZOS)
+        pos_x = (template_img.width - new_width) // 2
+        pos_y = (template_img.height - new_height) // 2
+        template_img.paste(product_img, (pos_x, pos_y))
         buf = BytesIO()
-        tpl.save(buf, 'PNG')
-        return buf.getvalue()
+        template_img.save(buf, format="PNG")
+        buf.seek(0)
+        logging.debug("Immagine composta correttamente")
+        return buf.read()
     except Exception as e:
-        logging.error(f"Errore composizione immagine: {e}")
+        logging.error(f"Errore nella composizione dell'immagine: {e}")
         return None
-
-# Rest of code (send_to_telegram, post_product, controlla_prodotti, main) unchanged
 
 # ==============================
 # INVIO SU TELEGRAM
