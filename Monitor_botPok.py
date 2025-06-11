@@ -12,15 +12,36 @@ from typing import Dict, List, Optional
 # === CONFIGURAZIONE ===
 TOKEN = '7909094251:AAFCIgZ6y8ccfxoRtIa-EQav4tF_FxXg5Xg'
 CHAT_ID = '125505180'
-CHECK_INTERVAL = 30  # secondi
-PREZZO_MAX = 60.00
+CHECK_INTERVAL = 60  # secondi
+PREZZO_MAX = 60.00   # Prezzo di default se non specificato
 ORARIO_INIZIO = 8
 ORARIO_FINE = 20
 
-# Lista link da monitorare
-LINKS = [
-    "https://www.amazon.it/gp/aw/d/B0F1G6H7DR/ref=ox_sc_saved_title_2?smid=A11IL2PNWYJU7H&psc=1"
-]
+# === CONFIGURAZIONE PRODOTTI CON PREZZI PERSONALIZZATI ===
+# Opzione 1: Lista semplice (usa PREZZO_MAX per tutti)
+# LINKS = [
+#     "https://www.amazon.it/dp/B08N5WRWNW",
+#     "https://www.amazon.it/dp/B07PHPXHQS"
+# ]
+
+# Opzione 2: Dizionario con prezzi personalizzati per ogni prodotto
+PRODUCTS = {
+    "https://www.amazon.it/gp/aw/d/B0F1G6H7DR/ref=ox_sc_saved_title_2?smid=A11IL2PNWYJU7H&psc=1": {
+        "max_price": 60.00,
+        "name": "ETB Rivali Predestinati"  # Nome opzionale per i log
+    },
+    "https://www.amazon.it/Pok%C3%A9mon-GCC-confezione-dellespansione-Predestinati/dp/B0F1G4CMFZ/": {
+        "max_price": 40.00,
+        "name": "Rivali Predestinati (sei buste di espansione)"
+    },
+    "https://www.amazon.it/gp/product/B0F1G4J4GS/": {
+        "max_price": 120.00,
+        "name": "Rivali Predestinati (18 buste di espansione)"
+    }
+}
+
+# Genera automaticamente la lista dei link dalla configurazione
+LINKS = list(PRODUCTS.keys()) if PRODUCTS else []
 
 # === SETUP LOGGING ===
 logging.basicConfig(
@@ -44,6 +65,17 @@ class AmazonPriceMonitor:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0"
         ]
     
+    def get_max_price_for_url(self, url: str) -> float:
+        """Ottiene il prezzo massimo per un URL specifico"""
+        if PRODUCTS and url in PRODUCTS:
+            return PRODUCTS[url]["max_price"]
+        return PREZZO_MAX
+    
+    def get_product_name(self, url: str) -> str:
+        """Ottiene il nome personalizzato del prodotto se disponibile"""
+        if PRODUCTS and url in PRODUCTS and "name" in PRODUCTS[url]:
+            return PRODUCTS[url]["name"]
+        return None
     def get_headers(self) -> Dict[str, str]:
         """Genera headers casuali per evitare il rilevamento"""
         return {
@@ -145,7 +177,15 @@ class AmazonPriceMonitor:
     def parse_amazon(self, url: str) -> Optional[Dict[str, any]]:
         """Analizza una pagina Amazon e restituisce i dati del prodotto"""
         try:
+            # Ottieni il prezzo massimo per questo specifico prodotto
+            max_price = self.get_max_price_for_url(url)
+            product_name = self.get_product_name(url)
+            
             logger.info(f"Controllo URL: {url}")
+            if product_name:
+                logger.info(f"📦 Prodotto: {product_name} (Max: €{max_price})")
+            else:
+                logger.info(f"💰 Prezzo massimo: €{max_price}")
             
             # Aggiungi delay casuale per sembrare più umano
             time.sleep(random.uniform(1, 3))
@@ -163,7 +203,7 @@ class AmazonPriceMonitor:
                 'h1 span#productTitle'
             ]
             
-            title = "Prodotto sconosciuto"
+            title = product_name or "Prodotto sconosciuto"
             for selector in title_selectors:
                 title_element = soup.select_one(selector)
                 if title_element:
@@ -194,16 +234,19 @@ class AmazonPriceMonitor:
                 "sold by amazon"
             ])
             
-            if price <= PREZZO_MAX and is_available:
-                logger.info(f"Prodotto trovato: {title} - €{price}")
+            # USA IL PREZZO MASSIMO PERSONALIZZATO
+            if price <= max_price and is_available:
+                logger.info(f"✅ OFFERTA TROVATA: {title} - €{price} (Max: €{max_price})")
                 return {
                     "title": title,
                     "price": price,
                     "url": url,
-                    "amazon_seller": amazon_seller
+                    "amazon_seller": amazon_seller,
+                    "max_price": max_price,
+                    "custom_name": product_name
                 }
             else:
-                logger.info(f"Prodotto non idoneo: prezzo €{price}, disponibile: {is_available}")
+                logger.info(f"❌ Prodotto non idoneo: prezzo €{price} > €{max_price} o non disponibile: {is_available}")
                 
         except requests.RequestException as e:
             logger.error(f"Errore di rete per {url}: {e}")
@@ -221,7 +264,17 @@ class AmazonPriceMonitor:
         """Funzione principale di monitoraggio"""
         logger.info("🚀 Avvio monitoraggio prezzi Amazon")
         logger.info(f"📊 Prodotti da monitorare: {len(LINKS)}")
-        logger.info(f"💰 Prezzo massimo: €{PREZZO_MAX}")
+        
+        # Mostra configurazione prezzi
+        if PRODUCTS:
+            logger.info("💰 Prezzi massimi personalizzati:")
+            for url, config in PRODUCTS.items():
+                name = config.get('name', 'Prodotto')
+                price = config['max_price']
+                logger.info(f"  • {name}: €{price}")
+        else:
+            logger.info(f"💰 Prezzo massimo globale: €{PREZZO_MAX}")
+            
         logger.info(f"🕐 Orario di lavoro: {ORARIO_INIZIO}:00 - {ORARIO_FINE}:00")
         
         notified = self.load_notified()
@@ -258,10 +311,19 @@ class AmazonPriceMonitor:
                         found_deals += 1
                         seller_info = "🏪 Amazon" if result['amazon_seller'] else "🏪 Terze parti"
                         
+                        # Calcola risparmio se c'è un nome personalizzato
+                        saving_info = ""
+                        if result['max_price'] > result['price']:
+                            saving = result['max_price'] - result['price']
+                            saving_percent = (saving / result['max_price']) * 100
+                            saving_info = f"💡 *Risparmi: €{saving:.2f} (-{saving_percent:.1f}%)*\n"
+                        
                         message = (
                             f"🎉 *OFFERTA TROVATA!*\n\n"
                             f"📦 *{result['title'][:100]}{'...' if len(result['title']) > 100 else ''}*\n\n"
                             f"💰 *Prezzo: €{result['price']:.2f}*\n"
+                            f"🎯 *Limite: €{result['max_price']:.2f}*\n"
+                            f"{saving_info}"
                             f"{seller_info}\n\n"
                             f"🛒 [ACQUISTA ORA]({result['url']})\n\n"
                             f"⚡ _Monitoraggio automatico attivo_"
